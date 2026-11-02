@@ -3,6 +3,7 @@
 Turns an Android phone into an HDMI monitor using a generic USB 2.0 / USB-C UVC
 HDMI capture card. Plug the card into the phone, plug your HDMI source into the
 card, and the picture appears full screen. Resolution choices available.
+![mage](https://github.com/Funcron/HDMI-IN-Android/blob/main/GenericCapCard.jpg)
 
 ## Using it
 
