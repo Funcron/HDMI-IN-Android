@@ -32,5 +32,4 @@ card, and the picture appears full screen. Resolution choices available.
 
 ## Credits
 
-Camera access uses [UVCAndroid](https://github.com/shiyinghan/UVCAndroid)
-(`com.herohan:UVCAndroid`), Apache 2.0.
+Camera access uses [UVCAndroid](https://github.com/shiyinghan/UVCAndroid), Apache 2.0.
