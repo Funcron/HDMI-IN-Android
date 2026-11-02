@@ -1,4 +1,4 @@
-# HDMI Monitor (Android)
+# HDMI In for Android
 
 Turns an Android phone into an HDMI monitor using a generic USB 2.0 / USB-C UVC
 HDMI capture card. Plug the card into the phone, plug your HDMI source into the
