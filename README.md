@@ -29,7 +29,10 @@ card, and the picture appears full screen. Resolution choices available.
   (rather than the standard video class) will not be detected.
 - Latency is typically around 100 ms or more, depending on the card and phone;
   it is a viewer, not a gaming monitor.
-
+- It *should* work with USB 3.X Capture devices, but your mileage may very. I
+  had only tested it on a similarly cheap device, and it had some stuttering
+  and horizontal sync issues.
+  
 ## Credits
 
 Camera access uses [UVCAndroid](https://github.com/shiyinghan/UVCAndroid), Apache 2.0.
