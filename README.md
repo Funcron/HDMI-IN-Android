@@ -15,19 +15,19 @@ card, and the picture appears full screen. Resolution choices available.
 - Tap the screen to show or hide the controls:
   - **Mode**: choose any resolution / frame rate / format the card reports.
   - **Audio**: plays the card's HDMI audio through the phone (needs microphone
-    permission; many cards expose audio as a USB microphone).
+    permission; many cards send audio as a USB microphone).
 - The top-left label shows the active mode.
 
 ## Limitations
 
-- **8-bit only.** The UVC library used here exposes MJPEG and 8-bit YUV. +10-bit
+- **8-bit only.** The UVC library used here used MJPEG and 8-bit YUV. +10-bit
   capture is not supported by the library, and USB 2.0 cards cannot carry it anyway.
 - **USB 2.0 cards** deliver 1080p30 (sometimes 1080p60) as MJPEG. Uncompressed
   video on USB 2.0 is limited to roughly 720p or lower.
 - The phone needs USB host (OTG) support over USB-C.
 - The card must be UVC-compliant. Cards that report a vendor-specific USB class
   (rather than the standard video class) will not be detected.
-- Latency is typically around 100 ms or more, depending on the card and phone;
+- Latency is typically around 60-100 ms, depending on the card and phone;
   it is a viewer, not a gaming monitor.
 - It *should* work with USB 3.X Capture devices, but your mileage may vary. I
   had only tested it on a similarly cheap device, and it had some stuttering
