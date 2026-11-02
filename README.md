@@ -1,8 +1,8 @@
 # HDMI In for Android
 
-Turns an Android phone into an HDMI monitor using a generic USB 2.0 / USB-C UVC
-HDMI capture card. Plug the card into the phone, plug your HDMI source into the
-card, and the picture appears full screen. Resolution choices available.
+Turns an Android phone into an HDMI monitor using a generic USB 2.0 / USB-C HDMI
+capture card. UVC (USB Video Class) is used; it acts like an external camera being 
+plugged into the phone (like FLIR dongles, USB boroscopes, USB microscopes, etc.)
 
 ![mage](https://github.com/Funcron/HDMI-IN-Android/blob/main/GenericCapCard.jpg)
 
@@ -20,17 +20,18 @@ camera's HDMI output? I think you get it.
 ## Using it
 
 - Plug the capture card into the phone's USB-C port, then open the app (or accept
-  the "open with HDMI Monitor" prompt). Allow camera and USB access when asked.
+  the 'open with HDMI Monitor' prompt). Allow camera and USB access when asked.
+  (this is because it thinks this is an external camera, your hardware cameras
+  have nothing to do with the software).
 - The app picks the best mode automatically: the largest picture up to 1080p that
-  runs at 24 fps or more, then the highest frame rate (so 1080p60 is chosen if the
-  card offers it, otherwise 1080p30).
+  runs at least 24/30fps. 1080p60 is supported if your capture card supports it.
 - Tap the screen to show or hide the controls:
-  - **Mode**: choose any resolution / frame rate / format the card reports.
+  - **Mode**: choose any resolution / frame rate / the format the card reports.
   - **Audio**: plays the card's HDMI audio through the phone (needs microphone
     permission; many cards send audio as a USB microphone).
 - The top-left label shows the active mode.
 - The app technically starts up after the splash message is okay'd, so don't sit
-  on that wpop-up and complain that it doesn't work.
+  on that pop-up and complain that it doesn't work.
 
 ## Limitations
 
@@ -38,15 +39,19 @@ camera's HDMI output? I think you get it.
   capture is not supported by the library, and USB 2.0 cards cannot carry it anyway.
 - **USB 2.0 cards** deliver 1080p30 (sometimes 1080p60) as MJPEG. Uncompressed
   video on USB 2.0 is limited to roughly 720p or lower.
-- The phone needs USB host (OTG) support over USB-C.
+- The phone needs USB host (OTG) support over USB-C. Which should be everything
+  after 2011 and Android 3.1
 - The card must be UVC-compliant. Cards that report a vendor-specific USB class
-  (rather than the standard video class) will not be detected.
+  (rather than the standard video class) will not be detected. Cheaper = better.
 - Latency is typically around 60-100 ms, depending on the card and phone;
   it is a viewer, you're not playing any FPS's with this. But, to each their own.
 - It *should* work with USB 3.X Capture devices, but your mileage may vary. I
-  had only tested it on a similarly cheap device, and it had some stuttering
-  and horizontal sync issues.
+  had only tested it on a similarly cheap 3.0 devices, and it had some stuttering
+  and horizontal sync issues (a green transparency of what's already on screen,
+  flickering in the middle of the screen) 🤷‍♂️
   
 ## Credits
 
-Camera access uses [UVCAndroid](https://github.com/shiyinghan/UVCAndroid), Apache 2.0.
+- [UVCAndroid](https://github.com/shiyinghan/UVCAndroid)
+- Apache 2.0.
+- Some AI helped, but the idea and tweaks came from a human.
