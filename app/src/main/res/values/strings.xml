@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HDMI Monitor</string>
+    <string name="status_waiting">Plug in a USB capture card</string>
+    <string name="status_need_camera_permission">Camera permission is required to read the USB capture card. Grant it, then reopen the app.</string>
+    <string name="status_unplugged">Capture card unplugged</string>
+    <string name="status_usb_denied">USB access was denied. Unplug and replug the capture card, then tap Allow.</string>
+    <string name="status_error">Could not open the capture card (error %1$d). Unplug and replug it.</string>
+    <string name="welcome_message">For use with generic USB 2.0 HDMI Capture Devices</string>
+    <string name="welcome_ok">Okay</string>
+    <string name="btn_mode">Mode</string>
+    <string name="btn_audio_off">Audio: off</string>
+    <string name="btn_audio_on">Audio: on</string>
+    <string name="dialog_mode_title">Video mode</string>
+    <string name="dialog_cancel">Cancel</string>
+    <string name="toast_no_usb_audio">No usable USB audio input found. Plug in the card first, or it may not expose audio.</string>
+    <string name="toast_audio_permission">Microphone permission is needed to receive the card\'s audio.</string>
+</resources>
