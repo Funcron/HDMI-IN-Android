@@ -21,7 +21,7 @@ for your digital camera? I think you get it.
 ## Using it
 
 - Plug the capture card into the phone's USB-C port, then open the app (or accept
-  the 'open with HDMI Monitor' prompt). Allow camera and USB access when asked.
+  the 'open with HDMI IN Android' prompt). Allow camera and USB access when asked.
   (this is because it thinks this is an external camera, your hardware cameras
   have nothing to do with the software, but you will most likely see the 'Camera
   on/recording indicator Android presents in the notification bar because of it).
@@ -31,13 +31,21 @@ for your digital camera? I think you get it.
   1080p @ 30fps is probably going to to be the best option unless your hardware
   is better.
 - Tap the screen to show or hide the controls:
-  - **Mode**: choose any resolution / frame rate / the format the card reports.
+  - **Mode**: pick a resolution on the left and a frame rate on the right (15, 20,
+    24, 25, 30, 50 or 60, limited to what the card supports at that size), then
+    Apply. The app remembers your choice for next time.
+  - **Scale**: *Fit* shows the whole picture with black bars, *Fill* covers the
+    screen and crops the edges, *Stretch* distorts the picture to match the screen.
   - **Audio**: plays the card's HDMI audio through the phone (needs microphone
     permission; many cards send audio as a USB microphone). Your capture card is
     the audio driver, so the output via your phone will most likely be in mono,
     and/or at a low bit rate. If it sounds like it's peaking or distorted, swap
-    video modes (typically only after first connection).
-- The top-left label shows the active mode when the overlay is on.
+    video modes (typically only after first connection). Audio fades in briefly at
+    the start and after a mode change to soften that.
+  - **Vol**: software volume, 0 to 200%.
+- The top-left label shows the active mode when the overlay is on, plus the live
+  received / shown / dropped frame rate if you are using the patched library (see
+  Building).
 
 ## Limitations
 
@@ -56,6 +64,22 @@ for your digital camera? I think you get it.
   and horizontal sync issues (a green transparency of what's already on screen,
   flickering in the middle of the screen) 🤷‍♂️
   
+## Building
+
+GitHub Actions (**Build APK**) builds the app against a patched copy of UVCAndroid
+(`patches/uvc-fast-mjpeg.patch`: parallel MJPEG decoding, a latest-frame-wins queue,
+and the frame-rate readout). It runs on every push to `main`, or by hand from the
+Actions tab; the APK is an artifact of the run. Pushing a tag such as `v0.4` (or
+publishing a release with a new tag) also attaches the APK to that release. Bump
+`versionName` in `app/build.gradle` first.
+
+APKs are signed with the debug key in `app/debug.keystore`, so a new build installs
+over an older one. It is a public debug key: fine for a personal app, not for
+publishing.
+
+Building in Android Studio uses the stock UVCAndroid from Maven. Everything works
+the same, just without the decoding speedups and the frame-rate line.
+
 ## Credits
 
 - [UVCAndroid](https://github.com/shiyinghan/UVCAndroid)

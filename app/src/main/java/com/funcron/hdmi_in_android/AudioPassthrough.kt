@@ -1,4 +1,4 @@
-package com.example.hdmimonitor
+package com.funcron.hdmi_in_android
 
 import android.Manifest
 import android.content.Context
@@ -32,6 +32,11 @@ import androidx.core.content.ContextCompat
  *    now and then, which is inaudible.
  *  - If playback still underruns, the buffer target grows by itself (a little more delay,
  *    no more dropouts).
+ *  - Each time audio starts (and whenever [fadeIn] is called, e.g. when the video stream
+ *    restarts) the output is silent for 200 ms and then fades in over 250 ms, which hides the
+ *    loud burst some capture cards produce while their stream settles.
+ *  - [gain] is a software volume (0 to 200 %). Samples are clamped, never wrapped, so
+ *    boosting cannot turn peaks into harsh digital noise.
  */
 class AudioPassthrough {
 
@@ -41,6 +46,21 @@ class AudioPassthrough {
 
     val isRunning: Boolean
         get() = running
+
+    /** Software volume, 1.0 = unchanged, up to [MAX_GAIN]. Can be changed while playing. */
+    @Volatile
+    var gain: Float = 1.0f
+
+    @Volatile
+    private var restartFade = true
+
+    // frames since the last (re)start of the fade; touched only by the audio thread
+    private var fadeFrames = 0L
+
+    /** Mutes for 200 ms, then fades back in over 250 ms. Safe to call from any thread. */
+    fun fadeIn() {
+        restartFade = true
+    }
 
     private class Streams(
         val recorder: AudioRecord,
@@ -69,6 +89,7 @@ class AudioPassthrough {
             null
         } ?: return false
 
+        restartFade = true
         running = true
         thread = Thread({ pump(streams) }, "hdmi-audio").also { it.start() }
         return true
@@ -181,6 +202,42 @@ class AudioPassthrough {
 
     // ------------------------------------------------------------------- loop
 
+    /** Applies the startup mute + fade-in and the software volume to [frames] frames. */
+    private fun applyGainAndFade(buf: ShortArray, frames: Int, channels: Int, sampleRate: Int) {
+        if (restartFade) {
+            restartFade = false
+            fadeFrames = 0
+        }
+        val muteFrames = sampleRate / 5          // 200 ms of silence
+        val rampFrames = sampleRate / 4          // then a 250 ms fade-in
+        val g = gain.coerceIn(0f, MAX_GAIN)
+        if (fadeFrames >= muteFrames + rampFrames && g == 1.0f) return   // nothing to do
+
+        var idx = 0
+        for (f in 0 until frames) {
+            val t = fadeFrames + f
+            val ramp = when {
+                t < muteFrames -> 0f
+                t >= muteFrames + rampFrames -> 1f
+                else -> {
+                    val x = (t - muteFrames).toFloat() / rampFrames
+                    x * x                          // ease-in, gentler start than a straight line
+                }
+            }
+            val m = g * ramp
+            for (c in 0 until channels) {
+                val v = (buf[idx] * m).toInt()
+                buf[idx] = when {
+                    v > Short.MAX_VALUE -> Short.MAX_VALUE
+                    v < Short.MIN_VALUE -> Short.MIN_VALUE
+                    else -> v.toShort()
+                }
+                idx++
+            }
+        }
+        fadeFrames += frames
+    }
+
     private fun pump(s: Streams) {
         val recorder = s.recorder
         val track = s.track
@@ -228,6 +285,8 @@ class AudioPassthrough {
                     got += n
                 }
                 if (!running) break
+
+                applyGainAndFade(chunk, chunkFrames, channels, s.sampleRate)
 
                 // Where is playback? head position counts frames actually played (32-bit wrap).
                 val head = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
@@ -299,5 +358,6 @@ class AudioPassthrough {
 
     companion object {
         private const val TAG = "HdmiAudio"
+        const val MAX_GAIN = 2.0f
     }
 }

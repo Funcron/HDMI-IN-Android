@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="16dp">
+
+    <!-- left: resolutions (scrolls) -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="3"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="4dp"
+            android:paddingBottom="4dp"
+            android:text="@string/dialog_resolution"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="13sp" />
+
+        <ListView
+            android:id="@+id/listResolutions"
+            android:layout_width="match_parent"
+            android:layout_height="230dp"
+            android:choiceMode="singleChoice" />
+    </LinearLayout>
+
+    <!-- right: frame rates for the selected resolution (scrolls) -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="2"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="4dp"
+            android:paddingBottom="4dp"
+            android:text="@string/dialog_fps"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="13sp" />
+
+        <ListView
+            android:id="@+id/listFps"
+            android:layout_width="match_parent"
+            android:layout_height="230dp"
+            android:choiceMode="singleChoice" />
+    </LinearLayout>
+</LinearLayout>

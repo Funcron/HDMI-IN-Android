@@ -5,7 +5,8 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <com.serenegiant.widget.AspectRatioSurfaceView
+    <!-- sized from code (Fit / Fill / Stretch), see MainActivity.applyScale() -->
+    <SurfaceView
         android:id="@+id/surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -44,6 +45,7 @@
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="24dp"
         android:background="#99000000"
+        android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="6dp"
         android:visibility="gone">
@@ -55,10 +57,33 @@
             android:text="@string/btn_mode" />
 
         <Button
+            android:id="@+id/btnScale"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/btn_scale_fit" />
+
+        <Button
             android:id="@+id/btnAudio"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:text="@string/btn_audio_off" />
+
+        <TextView
+            android:id="@+id/volumeLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:minWidth="64dp"
+            android:textColor="#FFFFFFFF"
+            android:textSize="14sp" />
+
+        <SeekBar
+            android:id="@+id/volumeSeek"
+            android:layout_width="150dp"
+            android:layout_height="wrap_content"
+            android:max="200"
+            android:progress="100" />
     </LinearLayout>
 </FrameLayout>
