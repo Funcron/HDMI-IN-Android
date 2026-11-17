@@ -28,10 +28,12 @@ camera's HDMI output? I think you get it.
 - Tap the screen to show or hide the controls:
   - **Mode**: choose any resolution / frame rate / the format the card reports.
   - **Audio**: plays the card's HDMI audio through the phone (needs microphone
-    permission; many cards send audio as a USB microphone).
-- The top-left label shows the active mode.
-- The app technically starts up after the splash message is okay'd, so don't sit
-  on that pop-up and complain that it doesn't work.
+    permission; many cards send audio as a USB microphone). Your capture card is
+    the audio driver, so the output via your phone will most likely be in mono,
+    and/or at a low bit rate. If it sounds like it's peaking or distorted, swap
+    video modes (typically only after first connection).
+- The top-left label shows the active mode when the overlay is on. Tap the screen
+  hide it and the mode and audio selection buttons as well.
 
 ## Limitations
 
@@ -54,4 +56,4 @@ camera's HDMI output? I think you get it.
 
 - [UVCAndroid](https://github.com/shiyinghan/UVCAndroid)
 - Apache 2.0.
-- Some AI helped, but the idea and tweaks came from a human.
+- Thought up by a human; hard (free) work done by an AI.
