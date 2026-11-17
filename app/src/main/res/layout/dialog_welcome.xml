@@ -18,7 +18,7 @@
 
         <ImageView
             android:id="@+id/welcomeImage"
-            android:layout_width="84dp"
+            android:layout_width="72dp"
             android:layout_height="wrap_content"
             android:adjustViewBounds="true"
             android:contentDescription="@string/welcome_image_description"
@@ -41,7 +41,7 @@
         android:id="@+id/welcomeVersion"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
+        android:layout_marginTop="4dp"
         android:gravity="center"
         android:textColor="?android:attr/textColorSecondary"
         android:textSize="14sp" />

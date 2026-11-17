@@ -40,8 +40,11 @@ for your digital camera? I think you get it.
     permission; many cards send audio as a USB microphone). Your capture card is
     the audio driver, so the output via your phone will most likely be in mono,
     and/or at a low bit rate. If it sounds like it's peaking or distorted, swap
-    video modes (typically only after first connection). Audio fades in briefly at
-    the start and after a mode change to soften that.
+    video modes (typically only after first connection). The app now does that for
+    you: the first time audio starts after the card connects, it briefly hops to the
+    next lower resolution and then back to the mode you were on (the picture
+    flickers for a couple of seconds). Audio also fades in briefly at the start and
+    after any mode change to soften the burst.
   - **Vol**: software volume, 0 to 200%.
 - The top-left label shows the active mode when the overlay is on, plus the live
   received / shown / dropped frame rate if you are using the patched library (see
@@ -69,7 +72,7 @@ for your digital camera? I think you get it.
 GitHub Actions (**Build APK**) builds the app against a patched copy of UVCAndroid
 (`patches/uvc-fast-mjpeg.patch`: parallel MJPEG decoding, a latest-frame-wins queue,
 and the frame-rate readout). It runs on every push to `main`, or by hand from the
-Actions tab; the APK is an artifact of the run. Pushing a tag such as `v0.4` (or
+Actions tab; the APK is an artifact of the run. Pushing a tag such as `v0.5` (or
 publishing a release with a new tag) also attaches the APK to that release. Bump
 `versionName` in `app/build.gradle` first.
 
