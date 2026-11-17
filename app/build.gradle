@@ -11,8 +11,8 @@ android {
         applicationId "com.funcron.hdmi_in_android"
         minSdk 24
         targetSdk 34
-        versionCode 4
-        versionName "0.4"
+        versionCode 5
+        versionName "0.5"
 
         // Keep the APK small: all modern phones are arm64 (older ones armeabi-v7a).
         ndk {

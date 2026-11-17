@@ -82,6 +82,34 @@ class MainActivity : AppCompatActivity() {
     private val audio = AudioPassthrough()
     private var audioWanted = false
 
+    // Auto swap (see maybeAutoSwap): some capture cards send a loud, peaking audio burst
+    // after they connect, and it calms down once the video mode changes. So the first time
+    // audio starts, the app hops to a neighbouring resolution and straight back.
+    private var autoSwapDone = false
+    private var swapOriginal: VideoMode? = null
+    private var swapTemp: VideoMode? = null
+
+    private val swapBackTask = Runnable {
+        val original = swapOriginal
+        val temp = swapTemp
+        swapOriginal = null
+        swapTemp = null
+        // only go back if nobody picked another mode in the meantime
+        if (original != null && cameraHelper != null && currentMode == temp) applyMode(original)
+    }
+
+    private val swapStartTask = Runnable {
+        val original = swapOriginal
+        val temp = swapTemp
+        if (original == null || temp == null || cameraHelper == null || currentMode != original) {
+            swapOriginal = null
+            swapTemp = null
+            return@Runnable
+        }
+        applyMode(temp, remember = false)
+        handler.postDelayed(swapBackTask, SWAP_HOLD_MS)
+    }
+
     private var welcomeDialog: AlertDialog? = null
 
     private val cameraPermission =
@@ -206,7 +234,7 @@ class MainActivity : AppCompatActivity() {
         updateAudioButton()
         updateScaleButton()
         showControls()
-        if (prefs.getString(KEY_WELCOME_SEEN, null) != appVersionName()) showWelcome()
+        showWelcome()
     }
 
     override fun onStart() {
@@ -229,7 +257,7 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
-    /** Shown on the first launch and again after each update (the version line changes). */
+    /** Shown on every launch; the camera starts behind it, so it never blocks anything. */
     private fun showWelcome() {
         val view = layoutInflater.inflate(R.layout.dialog_welcome, null)
         // version comes from versionName in app/build.gradle, so it only needs bumping there
@@ -240,7 +268,6 @@ class MainActivity : AppCompatActivity() {
             .setCancelable(false)
             .create()
         view.findViewById<Button>(R.id.btnOkay).setOnClickListener {
-            prefs.edit().putString(KEY_WELCOME_SEEN, appVersionName()).apply()
             dialog.dismiss()
             welcomeDialog = null
         }
@@ -259,6 +286,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         handler.removeCallbacks(statsTask)
+        cancelAutoSwap()
         audio.stop()
         clearCameraHelper()
         showStatus(getString(R.string.status_waiting))
@@ -315,6 +343,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onDetach(device: UsbDevice) {
+            cancelAutoSwap()
             audio.stop()
             showStatus(getString(R.string.status_unplugged))
         }
@@ -330,6 +359,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun onCameraOpened() {
         val helper = cameraHelper ?: return
+        cancelAutoSwap()
+        autoSwapDone = false          // a new connection gets its own swap
 
         // The list of supported formats only exists once the camera is open, so the
         // mode is chosen here, before preview starts: the one used last time if this
@@ -445,7 +476,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun applyMode(mode: VideoMode) {
+    private fun applyMode(mode: VideoMode, remember: Boolean = true) {
         val helper = cameraHelper ?: return
         try {
             helper.stopPreview()
@@ -454,12 +485,14 @@ class MainActivity : AppCompatActivity() {
             currentMode = mode
             setVideoSize(mode.width, mode.height)
             setInfoBase(mode.label)
-            prefs.edit()
-                .putInt(KEY_MODE_W, mode.width)
-                .putInt(KEY_MODE_H, mode.height)
-                .putInt(KEY_MODE_FPS, mode.fps)
-                .putInt(KEY_MODE_TYPE, mode.frameType)
-                .apply()
+            if (remember) {
+                prefs.edit()
+                    .putInt(KEY_MODE_W, mode.width)
+                    .putInt(KEY_MODE_H, mode.height)
+                    .putInt(KEY_MODE_FPS, mode.fps)
+                    .putInt(KEY_MODE_TYPE, mode.frameType)
+                    .apply()
+            }
             // the video stream just restarted, which is when some cards send a loud burst
             audio.fadeIn()
         } catch (t: Throwable) {
@@ -538,7 +571,39 @@ class MainActivity : AppCompatActivity() {
             audioWanted = false
             Toast.makeText(this, R.string.toast_no_usb_audio, Toast.LENGTH_LONG).show()
             updateAudioButton()
+        } else {
+            maybeAutoSwap()
         }
+    }
+
+    /**
+     * Once per camera connection, right after audio first starts: switch to the next lower
+     * resolution (same pixel format, nearest frame rate), then back to the mode that was
+     * active. If the current one is already the lowest, the next higher one is used.
+     * Backs off if the user changes mode meanwhile, and the swap itself is never saved
+     * as the remembered mode.
+     */
+    private fun maybeAutoSwap() {
+        if (autoSwapDone) return
+        autoSwapDone = true
+        val original = currentMode ?: return
+        val area = original.width * original.height
+        val sameFormat = VideoMode.resolutions(modes).filter { it.frameType == original.frameType }
+        val other = sameFormat.firstOrNull { it.width * it.height < area }
+            ?: sameFormat.lastOrNull { it.width * it.height > area }
+            ?: return
+        val temp = modes.filter { it.resolution == other }
+            .minByOrNull { abs(it.fps - original.fps) } ?: return
+        swapOriginal = original
+        swapTemp = temp
+        handler.postDelayed(swapStartTask, SWAP_DELAY_MS)
+    }
+
+    private fun cancelAutoSwap() {
+        handler.removeCallbacks(swapStartTask)
+        handler.removeCallbacks(swapBackTask)
+        swapOriginal = null
+        swapTemp = null
     }
 
     private fun updateAudioButton() {
@@ -608,6 +673,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HdmiInAndroid"
+        private const val SWAP_DELAY_MS = 1000L     // after audio starts, before swapping
+        private const val SWAP_HOLD_MS = 2000L      // time spent on the temporary mode
         private const val KEY_SCALE = "scale"
         private const val KEY_VOLUME = "volume"
         private const val KEY_AUDIO = "audio_on"
@@ -615,6 +682,5 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_MODE_H = "mode_h"
         private const val KEY_MODE_FPS = "mode_fps"
         private const val KEY_MODE_TYPE = "mode_type"
-        private const val KEY_WELCOME_SEEN = "welcome_seen_version"
     }
 }
