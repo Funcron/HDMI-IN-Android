@@ -12,6 +12,15 @@
     <string name="welcome_link">github.com/Funcron/HDMI-IN-Android</string>
     <string name="welcome_ok">Okay</string>
     <string name="btn_mode">Mode</string>
+    <string name="btn_scale_fit">Scale: Fit</string>
+    <string name="btn_scale_fill">Scale: Fill</string>
+    <string name="btn_scale_stretch">Scale: Stretch</string>
+    <string name="volume_label">Vol %1$d%%</string>
+    <string name="dialog_resolution">Resolution</string>
+    <string name="dialog_fps">Frame rate</string>
+    <string name="dialog_apply">Apply</string>
+    <string name="fps_item">%1$d fps</string>
+    <string name="stats_no_frames">no new frames</string>
     <string name="btn_audio_off">Audio: off</string>
     <string name="btn_audio_on">Audio: on</string>
     <string name="dialog_mode_title">Video mode</string>

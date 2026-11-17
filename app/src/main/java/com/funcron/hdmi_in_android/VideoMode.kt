@@ -4,6 +4,15 @@ import com.serenegiant.usb.Format
 import com.serenegiant.usb.UVCCamera
 import com.serenegiant.usb.Size as UvcSize
 
+/** A picture size in one pixel format, without a frame rate. */
+data class Resolution(val frameType: Int, val width: Int, val height: Int) {
+    val isMjpeg: Boolean
+        get() = frameType == UVCCamera.UVC_VS_FRAME_MJPEG
+
+    val label: String
+        get() = "$width x $height  (${if (isMjpeg) "MJPEG" else "YUV"})"
+}
+
 /** One selectable capture mode: frame type + resolution + frame rate. */
 data class VideoMode(
     val frameType: Int,
@@ -18,6 +27,9 @@ data class VideoMode(
     val formatName: String
         get() = if (isMjpeg) "MJPEG" else "YUV"
 
+    val resolution: Resolution
+        get() = Resolution(frameType, width, height)
+
     val label: String
         get() = "${width}x$height @ $fps fps  ($formatName)"
 
@@ -27,6 +39,22 @@ data class VideoMode(
         size.type == frameType && size.width == width && size.height == height && size.fps == fps
 
     companion object {
+
+        /** The only frame rates offered in the mode picker. */
+        val SELECTABLE_FPS = listOf(15, 20, 24, 25, 30, 50, 60)
+
+        /**
+         * Keeps only the modes whose frame rate is in [SELECTABLE_FPS]. If the card reports
+         * nothing in that list at all, every mode is kept so there is still something to pick.
+         */
+        fun selectable(modes: List<VideoMode>): List<VideoMode> =
+            modes.filter { it.fps in SELECTABLE_FPS }.ifEmpty { modes }
+
+        /** Distinct resolutions, largest first (uncompressed before MJPEG at the same size). */
+        fun resolutions(modes: List<VideoMode>): List<Resolution> =
+            modes.map { it.resolution }.distinct().sortedWith(
+                compareByDescending<Resolution> { it.width * it.height }.thenBy { it.isMjpeg }
+            )
 
         /** Flattens the camera's format descriptors into one entry per resolution + fps. */
         fun buildModes(formats: List<Format>?): List<VideoMode> {

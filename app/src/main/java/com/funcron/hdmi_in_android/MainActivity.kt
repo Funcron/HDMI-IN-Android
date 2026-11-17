@@ -8,10 +8,16 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ListView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,19 +30,30 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.herohan.uvcapp.CameraException
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
-import com.serenegiant.widget.AspectRatioSurfaceView
 import com.serenegiant.usb.Size as UvcSize
+import java.lang.reflect.Method
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
+    /** How the picture is fitted to the screen. */
+    private enum class ScaleMode { FIT, FILL, STRETCH }
+
     private var cameraHelper: ICameraHelper? = null
 
-    private lateinit var surfaceView: AspectRatioSurfaceView
+    private lateinit var surfaceView: SurfaceView
     private lateinit var statusText: TextView
     private lateinit var infoText: TextView
     private lateinit var controls: View
     private lateinit var modeButton: Button
+    private lateinit var scaleButton: Button
     private lateinit var audioButton: Button
+    private lateinit var volumeLabel: TextView
+    private lateinit var volumeSeek: SeekBar
+
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
 
     private val handler = Handler(Looper.getMainLooper())
     private val hideControlsTask = Runnable {
@@ -44,15 +61,27 @@ class MainActivity : AppCompatActivity() {
         infoText.visibility = View.GONE
     }
 
+    // Refreshes the fps line once a second, but only while the overlay is on screen.
+    private val statsTask = object : Runnable {
+        override fun run() {
+            if (infoText.visibility != View.VISIBLE) return
+            refreshInfo()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
     private var modes: List<VideoMode> = emptyList()
     private var currentMode: VideoMode? = null
+
+    private var scaleMode = ScaleMode.FIT
+    private var videoWidth = 0
+    private var videoHeight = 0
+
+    private var infoBase = ""
 
     private val audio = AudioPassthrough()
     private var audioWanted = false
 
-    // The welcome dialog shows on every launch (including auto-open from a USB
-    // attach). Camera/USB setup waits until it is dismissed.
-    private var welcomePending = true
     private var welcomeDialog: AlertDialog? = null
 
     private val cameraPermission =
@@ -89,7 +118,19 @@ class MainActivity : AppCompatActivity() {
         infoText = findViewById(R.id.info)
         controls = findViewById(R.id.controls)
         modeButton = findViewById(R.id.btnMode)
+        scaleButton = findViewById(R.id.btnScale)
         audioButton = findViewById(R.id.btnAudio)
+        volumeLabel = findViewById(R.id.volumeLabel)
+        volumeSeek = findViewById(R.id.volumeSeek)
+
+        // saved settings
+        scaleMode = ScaleMode.values().getOrElse(prefs.getInt(KEY_SCALE, 0)) { ScaleMode.FIT }
+        val volume = prefs.getInt(KEY_VOLUME, 100).coerceIn(0, 200)
+        audio.gain = volume / 100f
+        volumeSeek.progress = volume
+        updateVolumeLabel(volume)
+        audioWanted = prefs.getBoolean(KEY_AUDIO, false) &&
+            hasPermission(Manifest.permission.RECORD_AUDIO)
 
         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
@@ -104,7 +145,8 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        findViewById<View>(R.id.root).setOnClickListener {
+        val root = findViewById<View>(R.id.root)
+        root.setOnClickListener {
             if (controls.visibility == View.VISIBLE) {
                 handler.removeCallbacks(hideControlsTask)
                 hideControlsTask.run()
@@ -112,13 +154,27 @@ class MainActivity : AppCompatActivity() {
                 showControls()
             }
         }
+        // re-fit the picture when the screen size changes (rotation, split screen)
+        root.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if (r - l != oldR - oldL || b - t != oldB - oldT) applyScale()
+        }
+
         modeButton.setOnClickListener {
             showModeDialog()
+            showControls()
+        }
+        scaleButton.setOnClickListener {
+            val all = ScaleMode.values()
+            scaleMode = all[(scaleMode.ordinal + 1) % all.size]
+            prefs.edit().putInt(KEY_SCALE, scaleMode.ordinal).apply()
+            applyScale()
+            updateScaleButton()
             showControls()
         }
         audioButton.setOnClickListener {
             if (audioWanted) {
                 audioWanted = false
+                prefs.edit().putBoolean(KEY_AUDIO, false).apply()
                 audio.stop()
                 updateAudioButton()
             } else if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
@@ -128,14 +184,35 @@ class MainActivity : AppCompatActivity() {
             }
             showControls()
         }
+        volumeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                updateVolumeLabel(progress)
+                if (fromUser) {
+                    audio.gain = progress / 100f
+                    prefs.edit().putInt(KEY_VOLUME, progress).apply()
+                    showControls()
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar) {
+                showControls()
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar) {
+                showControls()
+            }
+        })
+
         updateAudioButton()
+        updateScaleButton()
         showControls()
-        showWelcome()
+        if (prefs.getString(KEY_WELCOME_SEEN, null) != appVersionName()) showWelcome()
     }
 
     override fun onStart() {
         super.onStart()
-        if (!welcomePending) startCameraFlow()
+        // The camera starts right away, even while the welcome dialog is still on screen.
+        startCameraFlow()
     }
 
     override fun onDestroy() {
@@ -144,25 +221,28 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // --------------------------------------------------------------- welcome
+
+    private fun appVersionName(): String? = try {
+        packageManager.getPackageInfo(packageName, 0).versionName
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Shown on the first launch and again after each update (the version line changes). */
     private fun showWelcome() {
         val view = layoutInflater.inflate(R.layout.dialog_welcome, null)
         // version comes from versionName in app/build.gradle, so it only needs bumping there
-        val versionName = try {
-            packageManager.getPackageInfo(packageName, 0).versionName
-        } catch (e: Exception) {
-            null
-        }
         view.findViewById<TextView>(R.id.welcomeVersion).text =
-            getString(R.string.welcome_version, versionName ?: "?")
+            getString(R.string.welcome_version, appVersionName() ?: "?")
         val dialog = AlertDialog.Builder(this)
             .setView(view)
             .setCancelable(false)
             .create()
         view.findViewById<Button>(R.id.btnOkay).setOnClickListener {
-            welcomePending = false
+            prefs.edit().putString(KEY_WELCOME_SEEN, appVersionName()).apply()
             dialog.dismiss()
             welcomeDialog = null
-            startCameraFlow()
         }
         welcomeDialog = dialog
         dialog.show()
@@ -178,6 +258,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        handler.removeCallbacks(statsTask)
         audio.stop()
         clearCameraHelper()
         showStatus(getString(R.string.status_waiting))
@@ -251,22 +332,23 @@ class MainActivity : AppCompatActivity() {
         val helper = cameraHelper ?: return
 
         // The list of supported formats only exists once the camera is open, so the
-        // best mode is chosen here, before preview starts.
+        // mode is chosen here, before preview starts: the one used last time if this
+        // card still offers it, otherwise the best automatic pick.
         try {
-            modes = VideoMode.buildModes(helper.getSupportedFormatList())
-            val best = VideoMode.pickBest(modes)
+            modes = VideoMode.selectable(VideoMode.buildModes(helper.getSupportedFormatList()))
+            val wanted = preferredMode()
             val current = helper.getPreviewSize()
-            if (best != null && (current == null || !best.matches(current))) {
-                helper.setPreviewSize(best.toSize())
+            if (wanted != null && (current == null || !wanted.matches(current))) {
+                helper.setPreviewSize(wanted.toSize())
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "Could not select best mode, using camera default", t)
+            Log.w(TAG, "Could not select a mode, using camera default", t)
         }
 
         helper.startPreview()
         val size = helper.getPreviewSize()
         if (size != null) {
-            surfaceView.setAspectRatio(size.width, size.height)
+            setVideoSize(size.width, size.height)
             currentMode = modes.firstOrNull { it.matches(size) }
             updateInfo(size)
         }
@@ -281,25 +363,83 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** The mode saved from last time if this card has it, otherwise the automatic best. */
+    private fun preferredMode(): VideoMode? {
+        val w = prefs.getInt(KEY_MODE_W, 0)
+        if (w > 0) {
+            val h = prefs.getInt(KEY_MODE_H, 0)
+            val fps = prefs.getInt(KEY_MODE_FPS, 0)
+            val type = prefs.getInt(KEY_MODE_TYPE, -1)
+            val saved = modes.firstOrNull {
+                it.width == w && it.height == h && it.fps == fps && it.frameType == type
+            }
+            if (saved != null) return saved
+        }
+        return VideoMode.pickBest(modes)
+    }
+
     // ----------------------------------------------------------------- modes
 
+    /**
+     * Two lists in one dialog: resolutions on the left, the frame rates the selected
+     * resolution supports on the right (limited to 15/20/24/25/30/50/60). Nothing changes
+     * until Apply is pressed.
+     */
     private fun showModeDialog() {
         val helper = cameraHelper ?: return
         if (!helper.isCameraOpened() || modes.isEmpty()) return
 
-        val sorted = modes.sortedWith(
-            compareByDescending<VideoMode> { it.width * it.height }
-                .thenByDescending { it.fps }
-                .thenBy { it.isMjpeg }
+        val resolutions = VideoMode.resolutions(modes)
+        if (resolutions.isEmpty()) return
+
+        val view = layoutInflater.inflate(R.layout.dialog_mode, null)
+        val resList = view.findViewById<ListView>(R.id.listResolutions)
+        val fpsList = view.findViewById<ListView>(R.id.listFps)
+
+        var selectedRes = currentMode?.resolution?.takeIf { it in resolutions } ?: resolutions.first()
+        var selectedFps: Int? = currentMode?.fps
+        var fpsOptions: List<Int> = emptyList()
+
+        fun refreshFpsList() {
+            fpsOptions = modes.filter { it.resolution == selectedRes }.map { it.fps }.distinct().sorted()
+            // keep the frame rate when the new resolution offers it, otherwise the closest one
+            val wanted = selectedFps ?: fpsOptions.lastOrNull() ?: 0
+            selectedFps = fpsOptions.minByOrNull { abs(it - wanted) }
+            fpsList.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_list_item_single_choice,
+                fpsOptions.map { getString(R.string.fps_item, it) }
+            )
+            val index = fpsOptions.indexOf(selectedFps)
+            if (index >= 0) {
+                fpsList.setItemChecked(index, true)
+                fpsList.setSelection(index)
+            }
+        }
+
+        resList.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_single_choice,
+            resolutions.map { it.label }
         )
-        val labels = sorted.map { it.label }.toTypedArray()
-        val checked = sorted.indexOfFirst { it == currentMode }
+        val resIndex = resolutions.indexOf(selectedRes)
+        resList.setItemChecked(resIndex, true)
+        resList.setSelection(resIndex)
+        resList.setOnItemClickListener { _, _, position, _ ->
+            selectedRes = resolutions[position]
+            refreshFpsList()
+        }
+        fpsList.setOnItemClickListener { _, _, position, _ ->
+            selectedFps = fpsOptions[position]
+        }
+        refreshFpsList()
 
         AlertDialog.Builder(this)
             .setTitle(R.string.dialog_mode_title)
-            .setSingleChoiceItems(labels, checked) { dialog, which ->
-                applyMode(sorted[which])
-                dialog.dismiss()
+            .setView(view)
+            .setPositiveButton(R.string.dialog_apply) { _, _ ->
+                val chosen = modes.firstOrNull { it.resolution == selectedRes && it.fps == selectedFps }
+                if (chosen != null && chosen != currentMode) applyMode(chosen)
             }
             .setNegativeButton(R.string.dialog_cancel, null)
             .show()
@@ -312,8 +452,16 @@ class MainActivity : AppCompatActivity() {
             helper.setPreviewSize(mode.toSize())
             helper.startPreview()
             currentMode = mode
-            surfaceView.setAspectRatio(mode.width, mode.height)
-            infoText.text = mode.label
+            setVideoSize(mode.width, mode.height)
+            setInfoBase(mode.label)
+            prefs.edit()
+                .putInt(KEY_MODE_W, mode.width)
+                .putInt(KEY_MODE_H, mode.height)
+                .putInt(KEY_MODE_FPS, mode.fps)
+                .putInt(KEY_MODE_TYPE, mode.frameType)
+                .apply()
+            // the video stream just restarted, which is when some cards send a loud burst
+            audio.fadeIn()
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to apply mode ${mode.label}", t)
         }
@@ -321,13 +469,65 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateInfo(size: UvcSize) {
         val mode = currentMode
-        infoText.text = mode?.label ?: "${size.width}x${size.height} @ ${size.fps} fps"
+        setInfoBase(mode?.label ?: "${size.width}x${size.height} @ ${size.fps} fps")
+    }
+
+    // ----------------------------------------------------------------- scale
+
+    private fun setVideoSize(width: Int, height: Int) {
+        videoWidth = width
+        videoHeight = height
+        applyScale()
+    }
+
+    /**
+     * Fit: whole picture visible, black bars where the shapes differ.
+     * Fill: picture covers the screen, edges are cropped.
+     * Stretch: picture is distorted to exactly match the screen.
+     */
+    private fun applyScale() {
+        val root = findViewById<View>(R.id.root) ?: return
+        val cw = root.width
+        val ch = root.height
+        if (cw <= 0 || ch <= 0 || videoWidth <= 0 || videoHeight <= 0) return
+
+        val w: Int
+        val h: Int
+        if (scaleMode == ScaleMode.STRETCH) {
+            w = cw
+            h = ch
+        } else {
+            val scaleX = cw.toFloat() / videoWidth
+            val scaleY = ch.toFloat() / videoHeight
+            val scale = if (scaleMode == ScaleMode.FIT) minOf(scaleX, scaleY) else maxOf(scaleX, scaleY)
+            w = (videoWidth * scale).roundToInt()
+            h = (videoHeight * scale).roundToInt()
+        }
+
+        val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+        if (lp.width != w || lp.height != h) {
+            lp.width = w
+            lp.height = h
+            lp.gravity = Gravity.CENTER
+            surfaceView.layoutParams = lp
+        }
+    }
+
+    private fun updateScaleButton() {
+        scaleButton.setText(
+            when (scaleMode) {
+                ScaleMode.FIT -> R.string.btn_scale_fit
+                ScaleMode.FILL -> R.string.btn_scale_fill
+                ScaleMode.STRETCH -> R.string.btn_scale_stretch
+            }
+        )
     }
 
     // ----------------------------------------------------------------- audio
 
     private fun enableAudio() {
         audioWanted = true
+        prefs.edit().putBoolean(KEY_AUDIO, true).apply()
         startAudioIfWanted()
         updateAudioButton()
     }
@@ -345,6 +545,10 @@ class MainActivity : AppCompatActivity() {
         audioButton.setText(if (audioWanted) R.string.btn_audio_on else R.string.btn_audio_off)
     }
 
+    private fun updateVolumeLabel(percent: Int) {
+        volumeLabel.text = getString(R.string.volume_label, percent)
+    }
+
     // -------------------------------------------------------------------- ui
 
     private fun showStatus(text: String) {
@@ -352,16 +556,65 @@ class MainActivity : AppCompatActivity() {
         statusText.visibility = View.VISIBLE
     }
 
+    private fun setInfoBase(text: String) {
+        infoBase = text
+        refreshInfo()
+    }
+
+    /** Mode label, plus a live fps line while the overlay is visible. */
+    private fun refreshInfo() {
+        val stats = previewStatsText()
+        infoText.text = if (stats != null) "$infoBase\n$stats" else infoBase
+    }
+
+    // Looked up by reflection so the app still builds against the stock UVCAndroid library,
+    // which has no such method. The patched library used by the CI build does.
+    private val statsMethod: Method? by lazy {
+        try {
+            Class.forName("com.serenegiant.usb.UVCCamera").getMethod("getPreviewStats")
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun previewStatsText(): String? {
+        val method = statsMethod ?: return null
+        return try {
+            val s = method.invoke(null) as? LongArray ?: return null
+            if (s.size < 4 || s[3] < 0) return null          // nothing measured yet
+            if (s[3] > 2500) {
+                getString(R.string.stats_no_frames)
+            } else {
+                String.format(
+                    Locale.US, "received %.1f   shown %.1f   dropped %d",
+                    s[0] / 10.0, s[1] / 10.0, s[2]
+                )
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     private fun showControls() {
         controls.visibility = View.VISIBLE
-        if (currentMode != null || infoText.text.isNotEmpty()) {
+        if (currentMode != null || infoBase.isNotEmpty()) {
             infoText.visibility = View.VISIBLE
         }
         handler.removeCallbacks(hideControlsTask)
         handler.postDelayed(hideControlsTask, 4000)
+        handler.removeCallbacks(statsTask)
+        if (infoText.visibility == View.VISIBLE) handler.post(statsTask)
     }
 
     companion object {
         private const val TAG = "HdmiInAndroid"
+        private const val KEY_SCALE = "scale"
+        private const val KEY_VOLUME = "volume"
+        private const val KEY_AUDIO = "audio_on"
+        private const val KEY_MODE_W = "mode_w"
+        private const val KEY_MODE_H = "mode_h"
+        private const val KEY_MODE_FPS = "mode_fps"
+        private const val KEY_MODE_TYPE = "mode_type"
+        private const val KEY_WELCOME_SEEN = "welcome_seen_version"
     }
 }
