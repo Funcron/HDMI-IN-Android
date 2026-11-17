@@ -146,6 +146,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showWelcome() {
         val view = layoutInflater.inflate(R.layout.dialog_welcome, null)
+        // version comes from versionName in app/build.gradle, so it only needs bumping there
+        val versionName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+        view.findViewById<TextView>(R.id.welcomeVersion).text =
+            getString(R.string.welcome_version, versionName ?: "?")
         val dialog = AlertDialog.Builder(this)
             .setView(view)
             .setCancelable(false)
