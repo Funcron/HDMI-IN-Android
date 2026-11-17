@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HDMI Monitor</string>
+    <string name="app_name">HDMI IN Android</string>
     <string name="status_waiting">Plug in a USB capture card</string>
     <string name="status_need_camera_permission">Camera permission is required to read the USB capture card. Grant it, then reopen the app.</string>
     <string name="status_unplugged">Capture card unplugged</string>

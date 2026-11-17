@@ -1,4 +1,4 @@
-package com.example.hdmimonitor
+package com.funcron.hdmi_in_android
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -362,6 +362,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val TAG = "HdmiMonitor"
+        private const val TAG = "HdmiInAndroid"
     }
 }

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace 'com.example.hdmimonitor'
+    namespace 'com.funcron.hdmi_in_android'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.example.hdmimonitor"
+        applicationId "com.funcron.hdmi_in_android"
         minSdk 24
         targetSdk 34
         versionCode 4

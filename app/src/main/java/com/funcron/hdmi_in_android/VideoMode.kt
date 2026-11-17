@@ -1,4 +1,4 @@
-package com.example.hdmimonitor
+package com.funcron.hdmi_in_android
 
 import com.serenegiant.usb.Format
 import com.serenegiant.usb.UVCCamera
