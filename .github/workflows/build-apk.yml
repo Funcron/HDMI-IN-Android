@@ -12,7 +12,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, welcome-and-audio-swap]   # TEMPORARY
     tags: ['v*']
   workflow_dispatch:
 
