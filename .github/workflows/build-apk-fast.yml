@@ -11,7 +11,7 @@ name: Build APK (fast MJPEG)
 on:
   workflow_dispatch:
   push:
-    branches: [fast-mjpeg-action, audio-quality]   # TEMPORARY: build audio-quality branch
+    branches: [fast-mjpeg-action]   # test builds while this branch is open
 
 env:
   UVC_REPO: shiyinghan/UVCAndroid
