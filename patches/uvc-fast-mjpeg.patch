@@ -1,3 +1,28 @@
+diff --git a/libuvccamera/src/main/java/com/serenegiant/usb/UVCCamera.java b/libuvccamera/src/main/java/com/serenegiant/usb/UVCCamera.java
+index d2dc867..36d00a0 100644
+--- a/libuvccamera/src/main/java/com/serenegiant/usb/UVCCamera.java
++++ b/libuvccamera/src/main/java/com/serenegiant/usb/UVCCamera.java
+@@ -619,6 +619,20 @@ public class UVCCamera {
+ 
+     private native String nativeGetSupportedFormats(final long id_camera);
+ 
++    private static native long[] nativeGetPreviewStats();
++
++    /**
++     * Preview statistics for the last full second, or null if unavailable.
++     * {received fps * 10, shown fps * 10, frames dropped, age of the numbers in ms (-1 = none yet)}
++     */
++    public static long[] getPreviewStats() {
++        try {
++            return nativeGetPreviewStats();
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
+     private native int nativeStartPreview(final long id_camera);
+ 
+     private native int nativeStopPreview(final long id_camera);
 diff --git a/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp b/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp
 index 461700d..eacdd0a 100644
 --- a/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp
@@ -13,7 +38,7 @@ index 461700d..eacdd0a 100644
      tjhandle tjInstance = NULL;
      int inSubsamp, inColorspace;
 diff --git a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
-index fd2433f..31dc2d8 100644
+index fd2433f..e009abd 100644
 --- a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
 +++ b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
 @@ -23,6 +23,8 @@
@@ -25,7 +50,7 @@ index fd2433f..31dc2d8 100644
  #include <linux/time.h>
  #include <unistd.h>
  
-@@ -34,11 +36,24 @@
+@@ -34,11 +36,48 @@
  #include "UVCPreview.h"
  #include "libuvc_internal.h"
  
@@ -49,10 +74,34 @@ index fd2433f..31dc2d8 100644
 +    clock_gettime(CLOCK_MONOTONIC, &ts);
 +    return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec;
 +}
++
++// Last published statistics, read from Java through uvc_preview_get_stats().
++// 32-bit values only, so plain atomic loads/stores are enough on every ABI.
++static uint32_t gStatRecvX10 = 0;
++static uint32_t gStatShownX10 = 0;
++static uint32_t gStatDropped = 0;
++static uint32_t gStatStampMs = 0;      // CLOCK_MONOTONIC ms (wraps, only differences are used)
++static uint32_t gStatValid = 0;
++
++static inline uint32_t now_ms32() {
++    return (uint32_t) (now_ns() / 1000000LL);
++}
++
++void uvc_preview_get_stats(int64_t out[4]) {
++    if (!__atomic_load_n(&gStatValid, __ATOMIC_ACQUIRE)) {
++        out[0] = out[1] = out[2] = 0;
++        out[3] = -1;
++        return;
++    }
++    out[0] = __atomic_load_n(&gStatRecvX10, __ATOMIC_RELAXED);
++    out[1] = __atomic_load_n(&gStatShownX10, __ATOMIC_RELAXED);
++    out[2] = __atomic_load_n(&gStatDropped, __ATOMIC_RELAXED);
++    out[3] = (int64_t) (uint32_t) (now_ms32() - __atomic_load_n(&gStatStampMs, __ATOMIC_RELAXED));
++}
  
  UVCPreview::UVCPreview(uvc_device_handle_t *devh)
          : mPreviewWindow(NULL),
-@@ -64,6 +79,12 @@ UVCPreview::UVCPreview(uvc_device_handle_t *devh)
+@@ -64,6 +103,12 @@ UVCPreview::UVCPreview(uvc_device_handle_t *devh)
            capture_thread(0) {
  
      ENTER();
@@ -65,7 +114,7 @@ index fd2433f..31dc2d8 100644
      pthread_cond_init(&preview_sync, NULL);
      pthread_mutex_init(&preview_mutex, NULL);
  //
-@@ -379,7 +400,7 @@ int UVCPreview::startPreview() {
+@@ -379,7 +424,7 @@ int UVCPreview::startPreview() {
              mIsRunning = false;
              pthread_mutex_lock(&preview_mutex);
              {
@@ -74,7 +123,7 @@ index fd2433f..31dc2d8 100644
              }
              pthread_mutex_unlock(&preview_mutex);
          }
-@@ -392,7 +413,11 @@ int UVCPreview::stopPreview() {
+@@ -392,7 +437,11 @@ int UVCPreview::stopPreview() {
      bool b = isRunning();
      if (LIKELY(b)) {
          mIsRunning = false;
@@ -87,7 +136,7 @@ index fd2433f..31dc2d8 100644
          pthread_cond_signal(&capture_sync);
          if (capture_thread && pthread_join(capture_thread, NULL) != EXIT_SUCCESS) {
              LOGW("UVCPreview::terminate capture thread: pthread_join failed");
-@@ -452,29 +477,45 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
+@@ -452,29 +501,45 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
              preview->recycle_frame(copy);
              return;
          }
@@ -135,7 +184,7 @@ index fd2433f..31dc2d8 100644
              pthread_cond_wait(&preview_sync, &preview_mutex);
          }
          if (LIKELY(isRunning() && previewFrames.size() > 0)) {
-@@ -558,7 +599,17 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
+@@ -558,7 +623,18 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
  
      uvc_frame_t *frame = NULL;
      uvc_frame_t *frame_yuv = NULL;
@@ -150,11 +199,12 @@ index fd2433f..31dc2d8 100644
 +    pthread_mutex_unlock(&preview_mutex);
 +    mStatReceived = 0;
 +    mStatDropped = 0;
++    __atomic_store_n(&gStatValid, 0, __ATOMIC_RELEASE);     // nothing measured for this stream yet
 +
      int result = uvc_start_streaming(
              mDeviceHandle, ctrl, uvc_preview_frame_callback, (void *) this, 0);
  
-@@ -571,26 +622,28 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
+@@ -571,26 +647,28 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
          LOGI("Streaming...");
  #endif
          if (frameFormatType == UVC_VS_FRAME_MJPEG) {
@@ -203,7 +253,7 @@ index fd2433f..31dc2d8 100644
                  }
              }
          } else {
-@@ -674,6 +727,197 @@ void UVCPreview::draw_preview_one(uvc_frame_t *frame, ANativeWindow **window) {
+@@ -674,6 +752,205 @@ void UVCPreview::draw_preview_one(uvc_frame_t *frame, ANativeWindow **window) {
      //RETURN();
  }
  
@@ -393,6 +443,14 @@ index fd2433f..31dc2d8 100644
 +                            (double) recv * 1e9 / (double) dt,
 +                            (double) mStatShown * 1e9 / (double) dt,
 +                            (unsigned) drop);
++        // publish for the on-screen overlay (fps * 10, rounded)
++        __atomic_store_n(&gStatRecvX10, (uint32_t) ((double) recv * 1e10 / (double) dt + 0.5),
++                         __ATOMIC_RELAXED);
++        __atomic_store_n(&gStatShownX10, (uint32_t) ((double) mStatShown * 1e10 / (double) dt + 0.5),
++                         __ATOMIC_RELAXED);
++        __atomic_store_n(&gStatDropped, drop, __ATOMIC_RELAXED);
++        __atomic_store_n(&gStatStampMs, now_ms32(), __ATOMIC_RELAXED);
++        __atomic_store_n(&gStatValid, 1, __ATOMIC_RELEASE);
 +        mStatShown = 0;
 +        mStatLastLogNs = now;
 +    }
@@ -402,7 +460,7 @@ index fd2433f..31dc2d8 100644
  //
  //======================================================================
 diff --git a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
-index 98516e7..8cd8ec4 100644
+index 98516e7..b254fbb 100644
 --- a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
 +++ b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
 @@ -41,6 +41,9 @@
@@ -447,3 +505,44 @@ index 98516e7..8cd8ec4 100644
      void clearPreviewFrame();
  
      static void *preview_thread_func(void *vptr_args);
+@@ -161,4 +189,9 @@ public:
+     int setCaptureDisplay(ANativeWindow *capture_window);
+ };
+ 
++// Last full second of preview statistics, process-wide (one preview runs at a time).
++// out[0] = received fps * 10, out[1] = shown fps * 10, out[2] = frames dropped,
++// out[3] = age of these numbers in ms, or -1 when nothing has been measured yet.
++void uvc_preview_get_stats(int64_t out[4]);
++
+ #endif /* UVCPREVIEW_H_ */
+diff --git a/libuvccamera/src/main/jni/UVCCamera/registerUVCCamera.cpp b/libuvccamera/src/main/jni/UVCCamera/registerUVCCamera.cpp
+index f67dcef..3f7c6d3 100644
+--- a/libuvccamera/src/main/jni/UVCCamera/registerUVCCamera.cpp
++++ b/libuvccamera/src/main/jni/UVCCamera/registerUVCCamera.cpp
+@@ -234,6 +234,18 @@ static jint nativeSetPreviewSize(JNIEnv *env, jobject thiz,
+     RETURN(JNI_ERR, jint);
+ }
+ 
++// Static: preview statistics of the last full second (see uvc_preview_get_stats)
++static jlongArray nativeGetPreviewStats(JNIEnv *env, jclass clazz) {
++    int64_t s[4];
++    uvc_preview_get_stats(s);
++    jlongArray result = env->NewLongArray(4);
++    if (LIKELY(result)) {
++        jlong v[4] = {(jlong) s[0], (jlong) s[1], (jlong) s[2], (jlong) s[3]};
++        env->SetLongArrayRegion(result, 0, 4, v);
++    }
++    return result;
++}
++
+ static jint nativeStartPreview(JNIEnv *env, jobject thiz,
+                                ID_TYPE id_camera) {
+ 
+@@ -330,6 +342,7 @@ static JNINativeMethod methods[] = {
+ 
+         {"nativeGetSupportedFormats", "(J)Ljava/lang/String;",                     (void *) nativeGetSupportedFormats},
+         {"nativeSetPreviewSize",      "(JIIII)I",                                  (void *) nativeSetPreviewSize},
++        {"nativeGetPreviewStats",     "()[J",                                      (void *) nativeGetPreviewStats},
+         {"nativeStartPreview",        "(J)I",                                      (void *) nativeStartPreview},
+         {"nativeStopPreview",         "(J)I",                                      (void *) nativeStopPreview},
+         {"nativeSetPreviewDisplay",   "(JLandroid/view/Surface;)I",                (void *) nativeSetPreviewDisplay},
