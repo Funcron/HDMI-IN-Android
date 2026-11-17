@@ -1,0 +1,449 @@
+diff --git a/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp b/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp
+index 461700d..eacdd0a 100644
+--- a/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp
++++ b/libuvccamera/src/main/jni/UVCCamera/ConvertHelper.cpp
+@@ -27,7 +27,8 @@ const char *colorspaceName[TJ_NUMCS] = {
+ 
+ int convert_mjpeg_to_rgbx_tj(void *in, int inSize, void *out, int width, int height) {
+     int retval = UVC_SUCCESS;
+-    int flags = 0;
++    // fast IDCT and nearest-neighbour chroma upsampling: noticeably faster, tiny quality cost
++    int flags = TJFLAG_FASTDCT | TJFLAG_FASTUPSAMPLE;
+     int pixelFormat = TJPF_RGBX;
+     tjhandle tjInstance = NULL;
+     int inSubsamp, inColorspace;
+diff --git a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
+index fd2433f..31dc2d8 100644
+--- a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
++++ b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.cpp
+@@ -23,6 +23,8 @@
+ */
+ 
+ #include <stdlib.h>
++#include <string.h>
++#include <time.h>
+ #include <linux/time.h>
+ #include <unistd.h>
+ 
+@@ -34,11 +36,24 @@
+ #include "UVCPreview.h"
+ #include "libuvc_internal.h"
+ 
+-#define MAX_FRAME 4
++// Compressed frames waiting for a decoder. When this is full the OLDEST frame is
++// discarded, so the screen always shows the newest frame (low latency).
++#define MAX_FRAME 2
++// Number of threads decoding MJPEG in parallel (the preview thread is one of them).
++// MJPEG frames are all independent, so decoding scales almost linearly.
++#define MAX_DECODE_THREADS 3
+ // RGBA_8888/RGBX_8888:4
+ // RGB_565:2
+ #define PREVIEW_PIXEL_BYTES 4
+-#define FRAME_POOL_SZ MAX_FRAME + 2
++#define FRAME_POOL_SZ (MAX_FRAME + MAX_DECODE_THREADS + 2)
++// Fast but slightly lower quality decode: no "fancy" chroma upsampling, fast IDCT.
++#define DECODE_FLAGS (TJFLAG_FASTDCT | TJFLAG_FASTUPSAMPLE)
++
++static inline int64_t now_ns() {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec;
++}
+ 
+ UVCPreview::UVCPreview(uvc_device_handle_t *devh)
+         : mPreviewWindow(NULL),
+@@ -64,6 +79,12 @@ UVCPreview::UVCPreview(uvc_device_handle_t *devh)
+           capture_thread(0) {
+ 
+     ENTER();
++    mRecvSeq = 0;
++    mLastPresentedSeq = 0;
++    mStatReceived = 0;
++    mStatDropped = 0;
++    mStatShown = 0;
++    mStatLastLogNs = 0;
+     pthread_cond_init(&preview_sync, NULL);
+     pthread_mutex_init(&preview_mutex, NULL);
+ //
+@@ -379,7 +400,7 @@ int UVCPreview::startPreview() {
+             mIsRunning = false;
+             pthread_mutex_lock(&preview_mutex);
+             {
+-                pthread_cond_signal(&preview_sync);
++                pthread_cond_broadcast(&preview_sync);
+             }
+             pthread_mutex_unlock(&preview_mutex);
+         }
+@@ -392,7 +413,11 @@ int UVCPreview::stopPreview() {
+     bool b = isRunning();
+     if (LIKELY(b)) {
+         mIsRunning = false;
+-        pthread_cond_signal(&preview_sync);
++        // Wake every decoder thread. The flag is cleared first and the broadcast is made
++        // under the mutex the waiters check it with, so no wakeup can be missed.
++        pthread_mutex_lock(&preview_mutex);
++        pthread_cond_broadcast(&preview_sync);
++        pthread_mutex_unlock(&preview_mutex);
+         pthread_cond_signal(&capture_sync);
+         if (capture_thread && pthread_join(capture_thread, NULL) != EXIT_SUCCESS) {
+             LOGW("UVCPreview::terminate capture thread: pthread_join failed");
+@@ -452,29 +477,45 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
+             preview->recycle_frame(copy);
+             return;
+         }
++        // Our own monotonically increasing number (this callback runs on one thread).
++        // Decoders use it to make sure an older frame never replaces a newer one.
++        copy->sequence = ++preview->mRecvSeq;
++        __sync_fetch_and_add(&preview->mStatReceived, 1);
+         preview->addPreviewFrame(copy);
+     }
+ }
+ 
++// Latest frame wins: if the decoders are behind, the OLDEST waiting frame is thrown away
++// and the new one is queued, instead of dropping the new one and showing stale frames.
+ void UVCPreview::addPreviewFrame(uvc_frame_t *frame) {
++    uvc_frame_t *discard = NULL;
+ 
+     pthread_mutex_lock(&preview_mutex);
+-    if (isRunning() && (previewFrames.size() < MAX_FRAME)) {
++    if (isRunning()) {
++        if (previewFrames.size() >= MAX_FRAME) {
++            discard = previewFrames.remove(0);
++            __sync_fetch_and_add(&mStatDropped, 1);
++        }
+         previewFrames.put(frame);
+         frame = NULL;
+         pthread_cond_signal(&preview_sync);
+     }
+     pthread_mutex_unlock(&preview_mutex);
++    if (discard) {
++        recycle_frame(discard);
++    }
+     if (frame) {
+         recycle_frame(frame);
+     }
+ }
+ 
++// Blocks until a compressed frame is available. Several decoder threads wait here,
++// so the condition is re-checked in a loop. Returns NULL once preview is stopping.
+ uvc_frame_t *UVCPreview::waitPreviewFrame() {
+     uvc_frame_t *frame = NULL;
+     pthread_mutex_lock(&preview_mutex);
+     {
+-        if (!previewFrames.size()) {
++        while (isRunning() && previewFrames.size() == 0) {
+             pthread_cond_wait(&preview_sync, &preview_mutex);
+         }
+         if (LIKELY(isRunning() && previewFrames.size() > 0)) {
+@@ -558,7 +599,17 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
+ 
+     uvc_frame_t *frame = NULL;
+     uvc_frame_t *frame_yuv = NULL;
+-    uvc_frame_t *frame_mjpeg = NULL;
++
++    // start every streaming session with fresh ordering state and statistics
++    mRecvSeq = 0;
++    pthread_mutex_lock(&preview_mutex);
++    mLastPresentedSeq = 0;
++    mStatShown = 0;
++    mStatLastLogNs = now_ns();
++    pthread_mutex_unlock(&preview_mutex);
++    mStatReceived = 0;
++    mStatDropped = 0;
++
+     int result = uvc_start_streaming(
+             mDeviceHandle, ctrl, uvc_preview_frame_callback, (void *) this, 0);
+ 
+@@ -571,26 +622,28 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
+         LOGI("Streaming...");
+ #endif
+         if (frameFormatType == UVC_VS_FRAME_MJPEG) {
+-            // MJPEG mode
+-            for (; LIKELY(isRunning());) {
+-                frame_mjpeg = waitPreviewFrame();
+-                if (LIKELY(frame_mjpeg)) {
+-//                    frame = get_frame(frame_mjpeg->width * frame_mjpeg->height * 2);
+-                    frame = get_frame(
+-                            frame_mjpeg->width * frame_mjpeg->height * PREVIEW_PIXEL_BYTES);
+-//                    c_start = clock();
+-                    result = uvc_mjpeg2rgbx_tj(frame_mjpeg, frame);   // MJPEG => yuyv
+-//                    c_end = clock();
+-//                    LOGI("uvc_mjpeg2yuyv time: %f", (double) (c_end - c_start) / CLOCKS_PER_SEC);
+-                    if (LIKELY(!result)) {
+-                        draw_preview_one(frame, &mPreviewWindow);
+-                        if (!addCaptureFrame(frame)) {
+-                            recycle_frame(frame);
+-                        }
+-                    } else {
+-                        recycle_frame(frame);
+-                    }
+-                    recycle_frame(frame_mjpeg);
++            // MJPEG mode: decode on several threads. This thread is one of the decoders,
++            // the others are started here and joined before returning.
++            long cores = sysconf(_SC_NPROCESSORS_ONLN);
++            int n = (cores >= 4) ? MAX_DECODE_THREADS : ((cores >= 2) ? 2 : 1);
++            pthread_t workers[MAX_DECODE_THREADS];
++            int started = 0;
++            for (int i = 1; i < n; i++) {
++                if (pthread_create(&workers[started], NULL, decode_thread_func,
++                                   (void *) this) == 0) {
++                    pthread_setname_np(workers[started], "decode_thread");
++                    started++;
++                }
++            }
++            __android_log_print(ANDROID_LOG_INFO, "UVCPreviewFps",
++                                "MJPEG decode threads: %d", started + 1);
++            decode_loop();
++            if (started > 0) {
++                pthread_mutex_lock(&preview_mutex);
++                pthread_cond_broadcast(&preview_sync);
++                pthread_mutex_unlock(&preview_mutex);
++                for (int i = 0; i < started; i++) {
++                    pthread_join(workers[i], NULL);
+                 }
+             }
+         } else {
+@@ -674,6 +727,197 @@ void UVCPreview::draw_preview_one(uvc_frame_t *frame, ANativeWindow **window) {
+     //RETURN();
+ }
+ 
++//======================================================================
++// Parallel MJPEG decode
++//======================================================================
++struct DecoderCtx {
++    tjhandle tj;
++    uint8_t *yuv;       // planar YUV scratch buffer, reused between frames
++    size_t yuvCap;
++
++    DecoderCtx() : tj(NULL), yuv(NULL), yuvCap(0) {}
++};
++
++// static
++void *UVCPreview::decode_thread_func(void *vptr_args) {
++    UVCPreview *preview = reinterpret_cast<UVCPreview *>(vptr_args);
++    preview->decode_loop();
++    return NULL;
++}
++
++/**
++ * Takes compressed frames from the queue until preview stops. Several threads run this
++ * at once; the sequence check in the present step keeps frames in order.
++ */
++void UVCPreview::decode_loop() {
++    DecoderCtx ctx;
++    ctx.tj = tjInitDecompress();
++    if (UNLIKELY(!ctx.tj)) {
++        LOGW("tjInitDecompress failed, using the legacy decode path only");
++    }
++
++    while (LIKELY(isRunning())) {
++        uvc_frame_t *jpeg = waitPreviewFrame();
++        if (UNLIKELY(!jpeg)) continue;
++
++        int fast = -1;
++        // The fast path never builds an RGBX copy of the frame, so it is only used while
++        // nobody is capturing (still capture / video recording / frame callback).
++        if (ctx.tj && !isCapturing()) {
++            fast = decode_and_present_fast(&ctx, jpeg);
++        }
++        if (fast < 0) {
++            // legacy path: MJPEG => RGBX frame => copy to the surface
++            uvc_frame_t *frame = get_frame(jpeg->width * jpeg->height * PREVIEW_PIXEL_BYTES);
++            if (LIKELY(frame)) {
++                if (LIKELY(!uvc_mjpeg2rgbx_tj(jpeg, frame))) {
++                    if (present_rgbx(frame)) {
++                        if (!addCaptureFrame(frame)) {
++                            recycle_frame(frame);
++                        }
++                    } else {
++                        recycle_frame(frame);
++                    }
++                } else {
++                    recycle_frame(frame);
++                }
++            }
++        }
++        recycle_frame(jpeg);
++    }
++
++    if (ctx.tj) tjDestroy(ctx.tj);
++    free(ctx.yuv);
++}
++
++/**
++ * Fast path: decode straight to planar YUV (about 3 MB for 1080p instead of 8 MB of RGBX),
++ * then let libyuv convert it directly into the locked surface buffer. This removes the
++ * RGBX intermediate frame and one full-frame memcpy.
++ */
++int UVCPreview::decode_and_present_fast(DecoderCtx *ctx, uvc_frame_t *jpeg) {
++    // Already behind what is on screen? Skip the decode entirely.
++    // (unlocked read: only a hint, the real check is repeated under the mutex)
++    if ((int32_t) (jpeg->sequence - mLastPresentedSeq) <= 0) {
++        __sync_fetch_and_add(&mStatDropped, 1);
++        return 0;
++    }
++
++    const unsigned char *buf = (const unsigned char *) jpeg->data;
++    const unsigned long size = (unsigned long) jpeg->data_bytes;
++    int w = 0, h = 0, subsamp = 0, colorspace = 0;
++
++    if (tjDecompressHeader3(ctx->tj, buf, size, &w, &h, &subsamp, &colorspace) < 0) {
++        __sync_fetch_and_add(&mStatDropped, 1);
++        return 0;       // truncated or corrupt frame: skip it
++    }
++    if (w != (int) jpeg->width || h != (int) jpeg->height) {
++        __sync_fetch_and_add(&mStatDropped, 1);
++        return 0;
++    }
++    if (colorspace != TJCS_YCbCr ||
++        (subsamp != TJSAMP_420 && subsamp != TJSAMP_422 && subsamp != TJSAMP_444)) {
++        return -1;      // unusual JPEG: let the legacy RGBX path handle it
++    }
++
++    const int uvWidth = tjPlaneWidth(1, w, subsamp);
++    const int uvHeight = tjPlaneHeight(1, h, subsamp);
++    const size_t ySize = (size_t) w * (size_t) h;
++    const size_t uvSize = (size_t) uvWidth * (size_t) uvHeight;
++    const size_t need = ySize + 2 * uvSize;
++    if (ctx->yuvCap < need) {
++        uint8_t *p = (uint8_t *) realloc(ctx->yuv, need);
++        if (UNLIKELY(!p)) return -1;
++        ctx->yuv = p;
++        ctx->yuvCap = need;
++    }
++    unsigned char *planes[3] = {ctx->yuv, ctx->yuv + ySize, ctx->yuv + ySize + uvSize};
++    int strides[3] = {w, uvWidth, uvWidth};
++
++    if (tjDecompressToYUVPlanes(ctx->tj, buf, size, planes, w, strides, h, DECODE_FLAGS) < 0) {
++        __sync_fetch_and_add(&mStatDropped, 1);
++        return 0;
++    }
++
++    int result = 0;
++    pthread_mutex_lock(&preview_mutex);
++    if (LIKELY(mPreviewWindow && isRunning() &&
++               (int32_t) (jpeg->sequence - mLastPresentedSeq) > 0)) {
++        ANativeWindow_Buffer out;
++        if (LIKELY(ANativeWindow_lock(mPreviewWindow, &out, NULL) == 0)) {
++            const int cw = (w < out.width) ? w : out.width;
++            const int ch = (h < out.height) ? h : out.height;
++            uint8_t *dst = (uint8_t *) out.bits;
++            const int dstStride = out.stride * PREVIEW_PIXEL_BYTES;
++            // The window is RGBA_8888, i.e. bytes R,G,B,A in memory, which libyuv calls ABGR.
++            // J* variants are the full-range YUV that JPEG uses.
++            switch (subsamp) {
++                case TJSAMP_420:
++                    libyuv::J420ToABGR(planes[0], w, planes[1], uvWidth, planes[2], uvWidth,
++                                       dst, dstStride, cw, ch);
++                    break;
++                case TJSAMP_422:
++                    libyuv::J422ToABGR(planes[0], w, planes[1], uvWidth, planes[2], uvWidth,
++                                       dst, dstStride, cw, ch);
++                    break;
++                default:    // TJSAMP_444
++                    libyuv::J444ToABGR(planes[0], w, planes[1], uvWidth, planes[2], uvWidth,
++                                       dst, dstStride, cw, ch);
++                    break;
++            }
++            ANativeWindow_unlockAndPost(mPreviewWindow);
++            mLastPresentedSeq = jpeg->sequence;
++            mStatShown++;
++            result = 1;
++            log_stats_locked();
++        } else {
++            __sync_fetch_and_add(&mStatDropped, 1);
++        }
++    } else {
++        // a newer frame was shown while this one was decoding
++        __sync_fetch_and_add(&mStatDropped, 1);
++    }
++    pthread_mutex_unlock(&preview_mutex);
++    return result;
++}
++
++// Legacy-path counterpart: shows an RGBX frame unless a newer one is already on screen.
++bool UVCPreview::present_rgbx(uvc_frame_t *frame) {
++    bool shown = false;
++    pthread_mutex_lock(&preview_mutex);
++    if (LIKELY(mPreviewWindow && (int32_t) (frame->sequence - mLastPresentedSeq) > 0)) {
++        if (LIKELY(copyToSurface(frame, &mPreviewWindow) == 0)) {
++            mLastPresentedSeq = frame->sequence;
++            mStatShown++;
++            shown = true;
++            log_stats_locked();
++        }
++    } else {
++        __sync_fetch_and_add(&mStatDropped, 1);
++    }
++    pthread_mutex_unlock(&preview_mutex);
++    return shown;
++}
++
++// Logs frames received from USB / shown on screen / dropped, about once per second.
++// Look for "fps: received=" in logcat. Call with preview_mutex held.
++void UVCPreview::log_stats_locked() {
++    const int64_t now = now_ns();
++    const int64_t dt = now - mStatLastLogNs;
++    if (dt >= 1000000000LL) {
++        const uint32_t recv = __sync_lock_test_and_set(&mStatReceived, 0);
++        const uint32_t drop = __sync_lock_test_and_set(&mStatDropped, 0);
++        // direct call (not LOGI) so it prints whatever the LOG_* build flags are
++        __android_log_print(ANDROID_LOG_INFO, "UVCPreviewFps",
++                            "fps: received=%.1f shown=%.1f dropped=%u",
++                            (double) recv * 1e9 / (double) dt,
++                            (double) mStatShown * 1e9 / (double) dt,
++                            (unsigned) drop);
++        mStatShown = 0;
++        mStatLastLogNs = now;
++    }
++}
++
+ //======================================================================
+ //
+ //======================================================================
+diff --git a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
+index 98516e7..8cd8ec4 100644
+--- a/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
++++ b/libuvccamera/src/main/jni/UVCCamera/UVCPreview.h
+@@ -41,6 +41,9 @@
+ 
+ typedef int (*convFunc_t)(uvc_frame_t *in, uvc_frame_t *out);
+ 
++// per-decoder-thread state (turbojpeg handle + planar YUV scratch buffer)
++struct DecoderCtx;
++
+ #define PIXEL_FORMAT_RAW 0        // same as PIXEL_FORMAT_YUV
+ #define PIXEL_FORMAT_YUV 1
+ #define PIXEL_FORMAT_NV12 2        // one format of YUV420SemiPlanar
+@@ -110,6 +113,31 @@ private:
+ 
+     uvc_frame_t *waitPreviewFrame();
+ 
++    // --- parallel MJPEG decode ------------------------------------------------
++    // sequence number handed to each compressed frame as it arrives (USB callback thread only)
++    uint32_t mRecvSeq;
++    // sequence number of the newest frame already shown; guarded by preview_mutex.
++    // Frames that finish decoding late (older than this) are dropped, never shown.
++    uint32_t mLastPresentedSeq;
++    // statistics, logged about once per second
++    uint32_t mStatReceived;      // updated with atomics
++    uint32_t mStatDropped;       // updated with atomics
++    uint32_t mStatShown;         // guarded by preview_mutex
++    int64_t mStatLastLogNs;      // guarded by preview_mutex
++
++    static void *decode_thread_func(void *vptr_args);
++
++    void decode_loop();
++
++    // Decodes one MJPEG frame and shows it.
++    //  1: shown, 0: dropped (stale/corrupt), -1: fast path not usable for this frame
++    int decode_and_present_fast(DecoderCtx *ctx, uvc_frame_t *jpeg);
++
++    // Shows an already converted RGBX frame if it is not older than what is on screen.
++    bool present_rgbx(uvc_frame_t *frame);
++
++    void log_stats_locked();
++
+     void clearPreviewFrame();
+ 
+     static void *preview_thread_func(void *vptr_args);
