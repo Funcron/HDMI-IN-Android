@@ -1,17 +1,20 @@
-name: Build APK (fast MJPEG)
+name: Build APK
 
-# Builds the app against a patched copy of UVCAndroid (parallel MJPEG decode,
-# latest-frame-wins queue, direct YUV->surface). Nothing is released automatically:
-# run it by hand (Actions > "Build APK (fast MJPEG)" > Run workflow), download the
-# APK artifact, and attach it to a release yourself.
+# Builds the app against a patched copy of UVCAndroid (patches/uvc-fast-mjpeg.patch:
+# parallel MJPEG decode, latest-frame-wins queue, direct YUV->surface, fps readout).
+#
+# Runs on every push to main, or by hand (Actions > Build APK > Run workflow). The APK is
+# an artifact of the run. Pushing a tag like v0.4 (or publishing a release with a new
+# tag) also attaches the APK to that release; bump versionName in app/build.gradle first.
 #
 # The repo's own files are not modified: the library is fetched at a pinned commit,
 # patched, and swapped in for the Maven dependency inside the CI workspace only.
 
 on:
-  workflow_dispatch:
   push:
-    branches: [fast-mjpeg-action]   # test builds while this branch is open
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
 
 env:
   UVC_REPO: shiyinghan/UVCAndroid
@@ -21,6 +24,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -104,8 +109,41 @@ jobs:
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E "lib/(arm64-v8a|armeabi-v7a)/libUVCCamera.so"
 
+      # The certificate fingerprint must be identical on every run (fixed key in
+      # app/debug.keystore); that is what lets a new APK install over an older one.
+      - name: Show the signing certificate
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep -i "SHA-256"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: hdmi-monitor-fast-mjpeg-debug-apk
+          name: hdmi-in-android-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  # Only for tag pushes: attach the APK to the release for that tag (creating the
+  # release if it does not exist yet).
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hdmi-in-android-apk
+
+      - name: Attach the APK to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK="HDMI-IN-Android-${GITHUB_REF_NAME}.apk"
+          mv app-debug.apk "$APK"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" "$APK" --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
