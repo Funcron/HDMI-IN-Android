@@ -1,9 +1,22 @@
-name: Build APK
+name: Build APK (fast MJPEG)
+
+# Builds the app against a patched copy of UVCAndroid (parallel MJPEG decode,
+# latest-frame-wins queue, direct YUV->surface). Nothing is released automatically:
+# run it by hand (Actions > "Build APK (fast MJPEG)" > Run workflow), download the
+# APK artifact, and attach it to a release yourself.
+#
+# The repo's own files are not modified: the library is fetched at a pinned commit,
+# patched, and swapped in for the Maven dependency inside the CI workspace only.
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
+  push:
+    branches: [fast-mjpeg-action]   # test builds while this branch is open
+
+env:
+  UVC_REPO: shiyinghan/UVCAndroid
+  # v1.0.13 sources; the patch is made against exactly this commit
+  UVC_REF: fcdae5f9a194e2111d57019176b53470a120415b
 
 jobs:
   build:
@@ -11,13 +24,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch UVCAndroid at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UVC_REPO }}
+          ref: ${{ env.UVC_REF }}
+          path: uvc-src
+
+      - name: Apply the patch
+        run: git -C uvc-src apply --whitespace=nowarn "$GITHUB_WORKSPACE/patches/uvc-fast-mjpeg.patch"
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      # Use the patched library module instead of com.herohan:UVCAndroid from Maven.
+      # Its build file is replaced by a trimmed copy (no publishing plugin, literal SDK
+      # values, only the two ABIs the app ships) so it builds inside this project.
+      - name: Swap in the patched library
+        run: |
+          cp -r uvc-src/libuvccamera libuvccamera
+          cat > libuvccamera/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.library'
+          }
+
+          android {
+              namespace 'com.serenegiant.uvccamera'
+              compileSdk 34
+
+              defaultConfig {
+                  minSdk 21
+                  consumerProguardFiles 'consumer-rules.pro'
+                  ndk {
+                      abiFilters 'armeabi-v7a', 'arm64-v8a'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+
+              buildFeatures {
+                  buildConfig true
+              }
+
+              externalNativeBuild {
+                  ndkBuild {
+                      path file('src/main/jni/Android.mk')
+                  }
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core:1.13.1'
+              implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.annotation:annotation:1.8.0'
+          }
+          EOF
+          echo >> settings.gradle
+          echo "include ':libuvccamera'" >> settings.gradle
+          sed -i "s#implementation 'com.herohan:UVCAndroid:[0-9.]*'#implementation project(':libuvccamera')#" app/build.gradle
+          grep -n "libuvccamera" settings.gradle app/build.gradle
+
       # The ubuntu runner image already ships the Android SDK (ANDROID_HOME);
-      # Gradle downloads any missing platform/build-tools once licenses are accepted.
+      # Gradle downloads the NDK/platform it needs once licenses are accepted.
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
@@ -26,8 +100,12 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
+      - name: Check the patched native library is in the APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E "lib/(arm64-v8a|armeabi-v7a)/libUVCCamera.so"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: hdmi-monitor-debug-apk
+          name: hdmi-monitor-fast-mjpeg-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
