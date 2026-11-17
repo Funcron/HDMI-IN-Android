@@ -7,6 +7,9 @@
     <string name="status_usb_denied">USB access was denied. Unplug and replug the capture card, then tap Allow.</string>
     <string name="status_error">Could not open the capture card (error %1$d). Unplug and replug it.</string>
     <string name="welcome_message">For use with generic USB 2.0 HDMI Capture Devices</string>
+    <string name="welcome_image_description">Example of a generic USB 2.0 HDMI capture card</string>
+    <string name="welcome_version">v%1$s</string>
+    <string name="welcome_link">github.com/Funcron/HDMI-IN-Android</string>
     <string name="welcome_ok">Okay</string>
     <string name="btn_mode">Mode</string>
     <string name="btn_audio_off">Audio: off</string>
