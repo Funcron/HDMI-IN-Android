@@ -1,8 +1,10 @@
 package com.funcron.hdmi_in_android
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -175,6 +177,8 @@ class MainActivity : AppCompatActivity() {
 
         val root = findViewById<View>(R.id.root)
         root.setOnClickListener {
+            // fallback if the Android "Open app?" prompt was dismissed: tap to allow access
+            pendingDevice?.let { requestPendingDevice(it) }
             if (controls.visibility == View.VISIBLE) {
                 handler.removeCallbacks(hideControlsTask)
                 hideControlsTask.run()
@@ -243,6 +247,17 @@ class MainActivity : AppCompatActivity() {
         startCameraFlow()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Accepting Android's "Open app?" prompt (or having it set as default) delivers
+        // the attach event here and grants USB access at the same time, so no second
+        // "Allow" prompt is needed.
+        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            pendingDevice?.let { handler.post { requestPendingDevice(it) } }
+        }
+    }
+
     override fun onDestroy() {
         welcomeDialog?.dismiss()
         welcomeDialog = null
@@ -285,6 +300,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        pendingDevice = null
+        handler.removeCallbacks(pendingTask)
         handler.removeCallbacks(statsTask)
         cancelAutoSwap()
         audio.stop()
@@ -322,9 +339,27 @@ class MainActivity : AppCompatActivity() {
         modes = emptyList()
     }
 
+    /** A plugged-in card that is waiting for the user to answer Android's prompt. */
+    private var pendingDevice: UsbDevice? = null
+    private val pendingTask = Runnable { pendingDevice?.let { requestPendingDevice(it) } }
+
     private val stateCallback = object : ICameraHelper.StateCallback {
         override fun onAttach(device: UsbDevice) {
-            cameraHelper?.selectDevice(device)
+            val usb = getSystemService(USB_SERVICE) as UsbManager
+            if (usb.hasPermission(device)) {
+                pendingDevice = null
+                cameraHelper?.selectDevice(device)
+            } else {
+                // Android is probably showing its own "Open app?" prompt right now. Asking
+                // for access too would stack a second, nearly identical dialog, so wait for
+                // the answer (onNewIntent) instead.
+                pendingDevice = device
+                showStatus(getString(R.string.status_tap_ok))
+                // If no prompt was answered (e.g. the app was opened by hand with the card
+                // already plugged in), ask for access ourselves after a short wait.
+                handler.removeCallbacks(pendingTask)
+                handler.postDelayed(pendingTask, PENDING_WAIT_MS)
+            }
         }
 
         override fun onDeviceOpen(device: UsbDevice, isFirstOpen: Boolean) {
@@ -343,6 +378,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onDetach(device: UsbDevice) {
+            pendingDevice = null
+            handler.removeCallbacks(pendingTask)
             cancelAutoSwap()
             audio.stop()
             showStatus(getString(R.string.status_unplugged))
@@ -355,6 +392,13 @@ class MainActivity : AppCompatActivity() {
         override fun onError(device: UsbDevice, e: CameraException) {
             showStatus(getString(R.string.status_error, e.code))
         }
+    }
+
+    /** Selects the waiting device; the library asks for USB access itself if still needed. */
+    private fun requestPendingDevice(device: UsbDevice) {
+        handler.removeCallbacks(pendingTask)
+        pendingDevice = null
+        cameraHelper?.selectDevice(device)
     }
 
     private fun onCameraOpened() {
@@ -674,6 +718,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "HdmiInAndroid"
         private const val SWAP_DELAY_MS = 1000L     // after audio starts, before swapping
+        private const val PENDING_WAIT_MS = 3000L
         private const val SWAP_HOLD_MS = 2000L      // time spent on the temporary mode
         private const val KEY_SCALE = "scale"
         private const val KEY_VOLUME = "volume"
