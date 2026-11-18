@@ -69,4 +69,4 @@ for your digital camera? I think you get it.
 
 - [UVCAndroid](https://github.com/shiyinghan/UVCAndroid)
 - Apache 2.0.
-- Thought up by a human; hard (free) work done by an AI.
+- _LOVINGLY MADE BY A HUMAN, WITH AI_
