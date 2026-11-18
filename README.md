@@ -22,6 +22,8 @@ for your digital camera? I think you get it.
 
 - Plug the capture card into the phone's USB-C port, then open the app (or accept
   the 'open with HDMI IN Android' prompt). Allow camera and USB access when asked.
+  Only one Android prompt should appear when plugging in; tick 'Use by default for this
+  USB device' on it to skip it entirely next time.
   (this is because it thinks this is an external camera, your hardware cameras
   have nothing to do with the software, but you will most likely see the 'Camera
   on/recording indicator Android presents in the notification bar because of it).
